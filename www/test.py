@@ -1,6 +1,6 @@
 import asyncio
 import orm
-from model import User, Blog, Comment
+from model import User
 
 loop = asyncio.get_event_loop()
 

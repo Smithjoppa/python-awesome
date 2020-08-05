@@ -195,7 +195,7 @@ class Model(dict, metaclass=ModelMetaclass):
     def getValueOrDefault(self, key):
         value = getattr(self, key, None)
         if value is None:
-            field = self.__mppings__[key]
+            field = self.__mappings__[key]
             if field is not None:
                 value = field.default() if callable(
                     field.default) else field.default
