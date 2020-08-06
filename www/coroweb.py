@@ -9,12 +9,14 @@ from aiohttp import web
 
 from apis import APIError
 
-# KEYWORD_ONLY  python文档中解释这个是在args之后的参数 KEYWORD_ONLY就等于关键字的命名
-# VAR_KEYWORD 不与任何其他参数绑定的关键字参数的字典。相当于函数定义中的**kw参数
-# VAR_POSITIONAL 位置参数的元组，未绑定任何其他参数。相当于函数定义中的*args参数。
+# _POSITIONAL_ONLY         = _ParameterKind.POSITIONAL_ONLY       # 位置参数_only    只能通过位置传值的参数。Python并没有明确的语法去定义一个只能通过位置传值的函数参数，但是在很多内置和扩展模块的函数会接受这种类型的参数。
+# _POSITIONAL_OR_KEYWORD   = _ParameterKind.POSITIONAL_OR_KEYWORD # 位置或关键字参数   arg
+# _VAR_POSITIONAL          = _ParameterKind.VAR_POSITIONAL        # 可变位置参数 *args
+# _KEYWORD_ONLY            = _ParameterKind.KEYWORD_ONLY          # keyword-only参数   (name,*args,x,z)
+# _VAR_KEYWORD             = _ParameterKind.VAR_KEYWORD           # 可变关键字参数  **kw
 
 
-def get(path):
+def get(path):  # 创建get的装饰器方法
     '''
     Define decorator @get('/path')
     '''
@@ -30,7 +32,7 @@ def get(path):
     return decorator
 
 
-def post(path):
+def post(path):  # 创建post的装饰器
     '''
     Define decorator @post('/path')
     '''
@@ -48,8 +50,11 @@ def post(path):
 
 def get_required_kw_args(fn):
     args = []
+    # 获取对象的参数
     params = inspect.signature(fn).parameters
     for name, param in params.items():
+        # kind:参数的类型  是否等同于与 inspect.Parameter.KEYWORD_ONLY
+        # inspect.Parameter.empty 等同于inspect._empty表示一个参数没有被类型注释
         if param.kind == inspect.Parameter.KEYWORD_ONLY and param.default == inspect.Parameter.empty:
             args.append(name)
     return tuple(args)
@@ -95,18 +100,23 @@ def has_request_arg(fn):
     return found
 
 
-class RequestHandler(object):
+class RequestHandler(object):  # 定义处理Url的类
+    # RequestHandler目的就是从URL函数中分析其需要接收的参数，
+    # 从request中获取必要的参数，调用URL函数，然后把结果转换为web.Response对象，
+    # 这样，就完全符合aiohttp框架的要求：
     def __init__(self, app, fn):
         self._app = app
         self._func = fn
-        self._has_request_arg = has_request_arg(fn)
-        self._has_var_kw_arg = has_var_kw_arg(fn)
-        self._has_named_kw_args = has_named_kw_args(fn)
-        self._named_kw_args = get_named_kw_args(fn)
-        self._required_kw_args = get_required_kw_args(fn)
+        self._has_request_arg = has_request_arg(fn)  # 是否有request参数
+        self._has_var_kw_arg = has_var_kw_arg(fn)  # 是否有字典参数
+        self._has_named_kw_args = has_named_kw_args(fn)  # 是否存在关键字参数
+        self._named_kw_args = get_named_kw_args(fn)  # 所有关键字参数
+        self._required_kw_args = get_required_kw_args(fn)  # 所有没有默认值的关键字参数
 
+    # 因为实现了__call__方法所以可以把这个实例看成一个函数
     async def __call__(self, request):
         kw = None
+        # required_kw_args是named_kw_args的真子集，第三个条件多余
         if self._has_var_kw_arg or self._has_named_kw_args or self._required_kw_args:
             if request.method == 'POST':
                 if not request.content_type:
@@ -130,9 +140,11 @@ class RequestHandler(object):
                     kw = dict()
                     for k, v in parse.parse_qs(qs, True).items():
                         kw[k] = v[0]
+        # 如果没有在GET或POST取得参数，直接把match_info的所有参数提取到kw
         if kw is None:
             kw = dict(**request.match_info)
         else:
+            # 如果没有字典参数且有关键字参数，把所有关键字参数提取出来，忽略所有字典参数
             if not self._has_var_kw_arg and self._named_kw_args:
                 # remove all unamed kw:
                 copy = dict()
@@ -140,20 +152,23 @@ class RequestHandler(object):
                     if name in kw:
                         copy[name] = kw[name]
                 kw = copy
-            # check named arg:
+            # 把match_info的参数提取到kw，判断URL参数和HTTP方法得到的参数是否有重合
             for k, v in request.match_info.items():
                 if k in kw:
                     logging.warning(
                         'Duplicate arg name in named arg and kw args: %s' % k)
                 kw[k] = v
+        # 有requst参数的情况 把request参数提取到kw
         if self._has_request_arg:
             kw['request'] = request
-        # check required kw:
+        # 检查没有默认值的关键字参数是否被赋值
         if self._required_kw_args:
+            # 循环元组 判断是否不再kw中
             for name in self._required_kw_args:
                 if name not in kw:
                     return web.HTTPBadRequest('Missing argument: %s' % name)
         logging.info('call with args: %s' % str(kw))
+        # 调用
         try:
             r = await self._func(**kw)
             return r
@@ -172,6 +187,7 @@ def add_route(app, fn):
     path = getattr(fn, '__route__', None)
     if path is None or method is None:
         raise ValueError('@get or @post not defined in %s.' % str(fn))
+    # 如果是一个协程或者生成器就返回True
     if not asyncio.iscoroutinefunction(fn) and not inspect.isgeneratorfunction(
             fn):
         fn = asyncio.coroutine(fn)
@@ -181,6 +197,7 @@ def add_route(app, fn):
     app.router.add_route(method, path, RequestHandler(app, fn))
 
 
+# 动态装载handlers中的方法
 def add_routes(app, module_name):
     # 判断是否有.的出现
     n = module_name.rfind('.')
@@ -198,7 +215,7 @@ def add_routes(app, module_name):
         if attr.startswith('_'):
             continue
         fn = getattr(mod, attr)
-        if callable(fn):
+        if callable(fn):  # 判断是否可以调用
             method = getattr(fn, '__method__', None)
             path = getattr(fn, '__route__', None)
             if method and path:
